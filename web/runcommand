@@ -1,0 +1,10 @@
+cd ../web
+python -m venv .venv
+# mac/linux
+source .venv/bin/activate
+# windows
+# .venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+

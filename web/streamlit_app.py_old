@@ -1,0 +1,175 @@
+
+
+## web/streamlit_app.py
+#```python
+import os
+import io
+import time
+import random
+import requests
+import pandas as pd
+import streamlit as st
+from datetime import datetime
+
+# Optional TTS via gTTS (online). Falls back silently if unavailable.
+try:
+    from gtts import gTTS
+except Exception:
+    gTTS = None
+
+SAFE_API_URL = "https://v2.jokeapi.dev/joke/Any?safe-mode&type=single"
+OFFLINE_JOKES = [
+    "Why did the teddy bear say no to dessert? Because it was stuffed!",
+    "What do you call a sleeping bull? A bulldozer!",
+    "Why did the banana go to the doctor? It wasn't peeling well.",
+    "What do you call a boomerang that doesn't come back? A stick!",
+    "Why did the cookie go to the nurse? It felt crummy.",
+    "Why don't eggs tell jokes? They'd crack each other up!",
+    "What do you call cheese that isn't yours? Nacho cheese!",
+    "How do you make a lemon drop? Just let it fall.",
+    "Why did the bicycle fall over? It was two-tired!",
+    "Why did the student eat his homework? Because the teacher said it was a piece of cake!",
+]
+
+# Optional defense-in-depth denylist
+DENYLIST = set()  # e.g., {"die", "kill"} to mask words
+
+def clean_joke(text: str) -> str:
+    for w in DENYLIST:
+        text = text.replace(w, "★" * len(w))
+    return text
+
+def fetch_joke(timeout=5.0, chaos_p=0.0):
+    """Fetch a safe single-line joke; fallback to offline on error. Chaos may delay/fail randomly."""
+    # Chaos injection
+    if random.random() < chaos_p:
+        if random.random() < 0.5:
+            time.sleep(2.0)
+        else:
+            raise RuntimeError("Simulated chaos failure")
+
+    try:
+        r = requests.get(SAFE_API_URL, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        joke = data.get("joke")
+        if not isinstance(joke, str) or not joke.strip():
+            raise ValueError("Malformed API response")
+        return clean_joke(joke), "api"
+    except Exception:
+        return random.choice(OFFLINE_JOKES), "offline"
+
+def tts_bytes(joke_text, lang="en"):
+    """Return MP3 bytes for joke_text using gTTS (if available)."""
+    if gTTS is None:
+        return None
+    try:
+        tts = gTTS(text=joke_text, lang=lang)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        return buf.read()
+    except Exception:
+        return None
+
+def write_log(row, path="logs/session_log.csv"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    header_needed = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as f:
+        if header_needed:
+            f.write("timestamp,source,success,joke_len,session_id\n")
+        f.write(",".join(map(str, [
+            datetime.utcnow().isoformat()+"Z",
+            row.get("source",""),
+            row.get("success",""),
+            row.get("joke_len",""),
+            row.get("session_id",""),
+        ])) + "\n")
+
+# --- UI ---
+st.set_page_config(page_title="Funny Joke Adventure", page_icon="🎈", layout="centered")
+
+# Session state
+if "plays" not in st.session_state: st.session_state.plays = 0
+if "session_id" not in st.session_state: st.session_state.session_id = f"web-{int(time.time())}"
+if "last_joke" not in st.session_state: st.session_state.last_joke = ""
+if "tts_on" not in st.session_state: st.session_state.tts_on = True  # default ON for web
+if "chaos_p" not in st.session_state: st.session_state.chaos_p = 0.0
+
+st.markdown("""
+<div style="text-align:center;font-size:2.2rem;font-weight:800;">
+<span style="color:#ff4b4b;">F</span><span style="color:#ffa500;">u</span><span style="color:#ffd700;">n</span><span style="color:#2ecc71;">n</span><span style="color:#3498db;">y</span>
+&nbsp;
+<span style="color:#ff4b4b;">J</span><span style="color:#ffa500;">o</span><span style="color:#ffd700;">k</span><span style="color:#2ecc71;">e</span>
+&nbsp;
+<span style="color:#3498db;">A</span><span style="color:#8e44ad;">d</span><span style="color:#e84393;">v</span><span style="color:#2ecc71;">e</span><span style="color:#ffd700;">n</span><span style="color:#ffa500;">t</span><span style="color:#ff4b4b;">u</span><span style="color:#3498db;">r</span><span style="color:#8e44ad;">e</span> 🎉
+</div>
+""", unsafe_allow_html=True)
+
+with st.expander("Parent settings / debug", expanded=False):
+    st.session_state.tts_on = st.checkbox("Speak the joke aloud (web TTS)", value=st.session_state.tts_on)
+    st.session_state.chaos_p = st.slider("Test resilience: chaos probability", 0.0, 0.5, st.session_state.chaos_p, 0.05, help="Inject random delays/failures")
+
+st.write("Press the big button to hear a new, kid-friendly joke!")
+
+big = st.button("🎈 New Adventure (Get a Joke) 🎈", use_container_width=True, type="primary")
+
+if big:
+    t0 = time.time()
+    try:
+        joke, src = fetch_joke(timeout=5.0, chaos_p=st.session_state.chaos_p)
+        st.session_state.last_joke = joke
+        st.session_state.plays += 1
+        write_log({
+            "source": src,
+            "success": (src == "api"),
+            "joke_len": len(joke),
+            "session_id": st.session_state.session_id
+        })
+    except Exception:
+        joke, src = random.choice(OFFLINE_JOKES), "offline"
+        st.session_state.last_joke = joke
+        write_log({
+            "source": "offline",
+            "success": False,
+            "joke_len": len(joke),
+            "session_id": st.session_state.session_id
+        })
+    t1 = time.time()
+    st.caption(f"Loaded in {t1 - t0:.2f}s • Source: {src.upper()}")
+
+if st.session_state.last_joke:
+    st.markdown(
+        f"<div style='font-size:2rem; text-align:center; padding:1rem; background:#ffffff; border-radius:16px; border:3px solid #e6e6e6;'>{st.session_state.last_joke}</div>",
+        unsafe_allow_html=True
+    )
+    # TTS playback
+    if st.session_state.tts_on:
+        mp3 = tts_bytes(st.session_state.last_joke)
+        if mp3:
+            st.audio(mp3, format="audio/mp3")
+        else:
+            st.info("🔈 Unable to synthesize voice right now; text is shown above.")
+
+# Simple session stats
+st.write("---")
+col1, col2, col3 = st.columns(3)
+col1.metric("Plays this session", st.session_state.plays)
+csv_path = "logs/session_log.csv"
+if os.path.exists(csv_path):
+    try:
+        df = pd.read_csv(csv_path)
+        api_rate = (df["success"].mean()*100) if not df.empty else 0.0
+        col2.metric("API success rate", f"{api_rate:.0f}%")
+        col3.metric("Avg joke length", f"{df['joke_len'].mean():.0f} chars")
+        with st.expander("Local log (anonymous, on this server only)"):
+            st.dataframe(df.tail(50), use_container_width=True, height=240)
+    except Exception:
+        col2.metric("API success rate", "—")
+        col3.metric("Avg joke length", "—")
+else:
+    col2.metric("API success rate", "—")
+    col3.metric("Avg joke length", "—")
+
+st.write("Made with ❤️ for tiny humans. No ads. Safe jokes only (API safe-mode + offline list).")
+

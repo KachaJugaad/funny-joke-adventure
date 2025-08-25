@@ -1,0 +1,10 @@
+cd funny-joke-adventure/desktop
+python -m venv .venv
+# mac/linux
+source .venv/bin/activate
+# windows (PowerShell)
+# .venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+python game.py --tts --chaos 0.2
+

@@ -1,0 +1,233 @@
+# web/streamlit_app.py
+import os
+import io
+import time
+import random
+import requests
+import pandas as pd
+import streamlit as st
+from datetime import datetime
+
+# Optional TTS via gTTS (online). Falls back silently if unavailable.
+try:
+    from gtts import gTTS
+except Exception:
+    gTTS = None
+
+SAFE_API_URL = "https://v2.jokeapi.dev/joke/Any?safe-mode&type=single"
+OFFLINE_JOKES = [
+    "Why did the teddy bear say no to dessert? Because it was stuffed!",
+    "What do you call a sleeping bull? A bulldozer!",
+    "Why did the banana go to the doctor? It wasn't peeling well.",
+    "What do you call a boomerang that doesn't come back? A stick!",
+    "Why did the cookie go to the nurse? It felt crummy.",
+    "Why don't eggs tell jokes? They'd crack each other up!",
+    "What do you call cheese that isn't yours? Nacho cheese!",
+    "How do you make a lemon drop? Just let it fall.",
+    "Why did the bicycle fall over? It was two-tired!",
+    "Why did the student eat his homework? Because the teacher said it was a piece of cake!",
+]
+
+# Optional defense-in-depth denylist
+DENYLIST = set()  # e.g., {"die", "kill"} to mask words
+
+def clean_joke(text: str) -> str:
+    for w in DENYLIST:
+        text = text.replace(w, "★" * len(w))
+    return text
+
+def fetch_joke(timeout=5.0):
+    """Fetch a safe single-line joke; fallback to offline on error."""
+    try:
+        r = requests.get(SAFE_API_URL, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        joke = data.get("joke")
+        if not isinstance(joke, str) or not joke.strip():
+            raise ValueError("Malformed API response")
+        return clean_joke(joke), "api"
+    except Exception:
+        return random.choice(OFFLINE_JOKES), "offline"
+
+def tts_bytes(joke_text, lang="en"):
+    """Return MP3 bytes for joke_text using gTTS (if available)."""
+    if gTTS is None:
+        return None
+    try:
+        tts = gTTS(text=joke_text, lang=lang)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        return buf.read()
+    except Exception:
+        return None
+
+def write_log(row, path="logs/session_log.csv"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    header_needed = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as f:
+        if header_needed:
+            f.write("timestamp,source,success,joke_len,session_id\n")
+        f.write(",".join(map(str, [
+            datetime.utcnow().isoformat()+"Z",
+            row.get("source",""),
+            row.get("success",""),
+            row.get("joke_len",""),
+            row.get("session_id",""),
+        ])) + "\n")
+
+# --- PAGE THEMING & STATE ---
+st.set_page_config(page_title="Funny Joke Adventure", page_icon="🎈", layout="wide")
+
+# Bright candy background + friendly fonts
+st.markdown("""
+<style>
+/* page background gradient */
+main, .stApp {
+  background: linear-gradient(135deg, #FFF3B0 0%, #FFD6E0 35%, #C8F7FF 70%, #D6FFB7 100%) !important;
+}
+.block-container {
+  padding-top: 1.2rem;
+  max-width: 1200px;
+}
+.title {
+  text-align: center;
+  font-size: 3rem;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+.joke-card {
+  background: #ffffffee;
+  border: 4px solid #ffffff;
+  border-radius: 24px;
+  padding: 1.4rem;
+  margin: 1rem 0;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  font-size: 2rem;
+  color: #111;
+}
+/* balloon button style */
+.balloon-btn button {
+  background: radial-gradient(circle at 30% 30%, #FF3B30 0%, #FF6B6B 70%, #FF8C00 100%) !important;
+  color: #fff !important;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.6);   /* outline effect */
+  border: none !important;
+  border-radius: 999px !important;
+  box-shadow: 0 10px 20px rgba(0,0,0,0.25) !important;
+  padding: 1.4rem 2rem !important;
+  font-size: 1.5rem !important;
+  font-weight: 900 !important;
+  transition: transform 120ms ease-in-out;
+}
+.balloon-btn button:hover {
+  transform: scale(1.08) translateY(-3px);
+}
+.balloon-btn button:active {
+  transform: scale(0.9);
+}
+/* caption under balloon */
+.balloon-caption {
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #222;    /* darker for contrast */
+  margin-top: 0.5rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Session state
+if "plays" not in st.session_state: st.session_state.plays = 0
+if "session_id" not in st.session_state: st.session_state.session_id = f"web-{int(time.time())}"
+if "last_joke" not in st.session_state: st.session_state.last_joke = ""
+if "tts_on" not in st.session_state: st.session_state.tts_on = True
+if "balloon_pos" not in st.session_state: st.session_state.balloon_pos = random.randint(0, 8)  # 3x3 grid
+
+# --- HEADER ---
+st.markdown("""
+<div class="title">
+  <span style="color:#ff4b4b;">F</span><span style="color:#ffa500;">u</span><span style="color:#ffd700;">n</span><span style="color:#2ecc71;">n</span><span style="color:#3498db;">y</span>
+  &nbsp;
+  <span style="color:#ff4b4b;">J</span><span style="color:#ffa500;">o</span><span style="color:#ffd700;">k</span><span style="color:#2ecc71;">e</span>
+  &nbsp;
+  <span style="color:#3498db;">A</span><span style="color:#8e44ad;">d</span><span style="color:#e84393;">v</span><span style="color:#2ecc71;">e</span><span style="color:#ffd700;">n</span><span style="color:#ffa500;">t</span><span style="color:#ff4b4b;">u</span><span style="color:#3498db;">r</span><span style="color:#8e44ad;">e</span> 🎉
+</div>
+""", unsafe_allow_html=True)
+st.caption("Pop the balloon to hear and read a silly, kid-safe joke!")
+
+# --- GRID LAYOUT FOR BALLOON POSITION (3x3) ---
+# We'll place one "balloon button" in a random cell each time a joke is popped.
+rows = []
+for _ in range(3):
+    rows.append(st.columns(3, gap="large"))
+
+# figure out the target row/col from the single index
+idx = st.session_state.balloon_pos
+r, c = divmod(idx, 3)
+cell = rows[r][c]
+
+with cell:
+    # style the button via container class
+    bwrap = st.container()
+    with bwrap:
+        st.markdown('<div class="balloon-btn">', unsafe_allow_html=True)
+        popped = st.button("🎈 POP ME! 🎈", use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('<div class="balloon-caption">tap to pop → surprise joke!</div>', unsafe_allow_html=True)
+
+# --- HANDLE POP ---
+if popped:
+    t0 = time.time()
+    joke, src = fetch_joke(timeout=5.0)
+    st.session_state.last_joke = joke
+    st.session_state.plays += 1
+    write_log({
+        "source": src,
+        "success": (src == "api"),
+        "joke_len": len(joke),
+        "session_id": st.session_state.session_id
+    })
+    t1 = time.time()
+    st.toast("POP! 🎈", icon="🎉")
+    # fun confetti
+    st.balloons()
+    st.caption(f"Loaded in {t1 - t0:.2f}s • Source: {src.upper()}")
+    # move balloon to a different random cell next time
+    # ensure it changes position (avoid same index repeatedly)
+    choices = [i for i in range(9) if i != idx]
+    st.session_state.balloon_pos = random.choice(choices)
+
+# --- JOKE DISPLAY (always visible when we have one) ---
+if st.session_state.last_joke:
+    st.markdown(f"<div class='joke-card'>{st.session_state.last_joke}</div>", unsafe_allow_html=True)
+    if st.session_state.tts_on:
+        mp3 = tts_bytes(st.session_state.last_joke)
+        if mp3:
+            st.audio(mp3, format="audio/mp3")
+        else:
+            st.info("🔈 Voice not available right now; text shown above.")
+
+# --- PARENT SETTINGS & STATS ---
+with st.expander("Parent settings & session stats", expanded=False):
+    st.session_state.tts_on = st.checkbox("Speak the joke aloud (web TTS)", value=st.session_state.tts_on)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Plays this session", st.session_state.plays)
+    csv_path = "logs/session_log.csv"
+    if os.path.exists(csv_path):
+        try:
+            df = pd.read_csv(csv_path)
+            api_rate = (df["success"].mean()*100) if not df.empty else 0.0
+            col2.metric("API success rate", f"{api_rate:.0f}%")
+            col3.metric("Avg joke length", f"{df['joke_len'].mean():.0f} chars")
+            with st.expander("Local log (anonymous, on this server only)"):
+                st.dataframe(df.tail(50), use_container_width=True, height=240)
+        except Exception:
+            col2.metric("API success rate", "—")
+            col3.metric("Avg joke length", "—")
+    else:
+        col2.metric("API success rate", "—")
+        col3.metric("Avg joke length", "—")
+
+st.caption("Made with ❤️ for tiny humans. No ads. Safe jokes only (API safe-mode + offline list).")
+
